@@ -1,34 +1,36 @@
 use std::sync::Arc;
 
+use bytemuck::{Pod, Zeroable};
 use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, SubpassContents};
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
-use vulkano::device::{Device, DeviceExtensions, Features};
-use vulkano::image::view::ImageView;
+use vulkano::device::{Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo};
+use vulkano::image::view::{ImageView, ImageViewCreateInfo};
 use vulkano::image::{ImageAccess, ImageUsage, SwapchainImage};
-use vulkano::instance::Instance;
+use vulkano::instance::{Instance, InstanceCreateInfo, InstanceExtensions};
 use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
 use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
 use vulkano::pipeline::GraphicsPipeline;
-use vulkano::render_pass::{Framebuffer, RenderPass, Subpass};
-use vulkano::swapchain::{AcquireError, Swapchain, SwapchainCreationError};
+use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
+use vulkano::swapchain::{AcquireError, Swapchain, SwapchainCreateInfo, SwapchainCreationError};
 use vulkano::sync::{FlushError, GpuFuture};
-use vulkano::{
-    app_info_from_cargo_toml, impl_vertex, single_pass_renderpass, swapchain, sync, Version,
-};
+use vulkano::{impl_vertex, single_pass_renderpass, swapchain, sync, Version};
 use vulkano_win::VkSurfaceBuild;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{Window, WindowBuilder};
 
 fn main() {
-    let instance = Instance::new(
-        Some(&app_info_from_cargo_toml!()),
-        Version::V1_2,
-        &vulkano_win::required_extensions(),
-        ["VK_LAYER_KHRONOS_validation"],
-    )
+    let instance = Instance::new(InstanceCreateInfo {
+        engine_version: Version::V1_2,
+        enabled_extensions: InstanceExtensions {
+            khr_get_surface_capabilities2: false,
+            ..vulkano_win::required_extensions()
+        },
+        enabled_layers: vec!["VK_LAYER_KHRONOS_validation".to_string()],
+        ..InstanceCreateInfo::application_from_cargo_toml()
+    })
     .unwrap();
 
     let event_loop = EventLoop::new();
@@ -42,60 +44,79 @@ fn main() {
     };
 
     let (physical_device, device, queue) = {
-        let (physical_device, queue_family) = PhysicalDevice::enumerate(&instance)
-            .filter(|&p| p.supported_extensions().is_superset_of(&device_extensions))
-            .filter_map(|p| {
-                p.queue_families()
-                    .find(|&q| q.supports_graphics() && surface.is_supported(q).unwrap_or(false))
-                    .map(|q| (p, q))
-            })
-            .min_by_key(|(p, _)| match p.properties().device_type {
-                PhysicalDeviceType::DiscreteGpu => 0,
-                PhysicalDeviceType::IntegratedGpu => 1,
-                PhysicalDeviceType::VirtualGpu => 2,
-                PhysicalDeviceType::Cpu => 3,
-                PhysicalDeviceType::Other => 4,
-            })
+        let (physical_device, device, mut queues) = {
+            let (physical_device, queue_family) = PhysicalDevice::enumerate(&instance)
+                .filter(|&p| p.supported_extensions().is_superset_of(&device_extensions))
+                .filter_map(|p| {
+                    p.queue_families()
+                        .find(|&q| {
+                            q.supports_graphics() && q.supports_surface(&surface).unwrap_or(false)
+                        })
+                        .map(|q| (p, q))
+                })
+                .min_by_key(|(p, _)| match p.properties().device_type {
+                    PhysicalDeviceType::DiscreteGpu => 0,
+                    PhysicalDeviceType::IntegratedGpu => 1,
+                    PhysicalDeviceType::VirtualGpu => 2,
+                    PhysicalDeviceType::Cpu => 3,
+                    PhysicalDeviceType::Other => 4,
+                })
+                .unwrap();
+
+            println!(
+                "Using device: {}, (type: {:?})",
+                physical_device.properties().device_name,
+                physical_device.properties().device_type
+            );
+            let (device, queues) = Device::new(
+                physical_device,
+                DeviceCreateInfo {
+                    enabled_extensions: physical_device
+                        .required_extensions()
+                        .union(&device_extensions),
+                    queue_create_infos: vec![QueueCreateInfo::family(queue_family)],
+                    ..Default::default()
+                },
+            )
             .unwrap();
-
-        println!(
-            "Using device: {}, (type: {:?})",
-            physical_device.properties().device_name,
-            physical_device.properties().device_type
-        );
-
-        let (device, mut queues) = Device::new(
-            physical_device,
-            &Features::none(),
-            &physical_device
-                .required_extensions()
-                .union(&device_extensions),
-            [(queue_family, 0.5)].iter().cloned(),
-        )
-        .unwrap();
+            (physical_device, device, queues)
+        };
 
         (physical_device, device, queues.next().unwrap())
     };
 
     let (mut swapchain, images) = {
-        let caps = surface.capabilities(physical_device).unwrap();
-        let composite_alpha = caps.supported_composite_alpha.iter().next().unwrap();
-        let format = caps.supported_formats[0].0;
-        let dimensions: [u32; 2] = surface.window().inner_size().into();
+        let surface_capabilities = physical_device
+            .surface_capabilities(&surface, Default::default())
+            .unwrap();
+        let image_format = Some(
+            physical_device
+                .surface_formats(&surface, Default::default())
+                .unwrap()[0]
+                .0,
+        );
 
-        Swapchain::start(device.clone(), surface.clone())
-            .num_images(caps.min_image_count)
-            .format(format)
-            .dimensions(dimensions)
-            .usage(ImageUsage::color_attachment())
-            .sharing_mode(&queue)
-            .composite_alpha(composite_alpha)
-            .build()
-            .unwrap()
+        Swapchain::new(
+            device.clone(),
+            surface.clone(),
+            SwapchainCreateInfo {
+                min_image_count: surface_capabilities.min_image_count,
+                image_format,
+                image_extent: surface.window().inner_size().into(),
+                image_usage: ImageUsage::color_attachment(),
+                composite_alpha: surface_capabilities
+                    .supported_composite_alpha
+                    .iter()
+                    .next()
+                    .unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
     };
 
     #[repr(C)]
-    #[derive(Default, Debug, Clone)]
+    #[derive(Clone, Copy, Debug, Default, Zeroable, Pod)]
     struct Vertex {
         position: [f32; 2],
     }
@@ -107,17 +128,15 @@ fn main() {
         false,
         [
             Vertex {
-                position: [-0.5, -0.25],
+                position: [-1.0, -1.0],
             },
             Vertex {
-                position: [0.0, 0.5],
+                position: [-1.0, 3.0],
             },
             Vertex {
-                position: [0.25, -0.1],
+                position: [3.0, -1.0],
             },
-        ]
-        .iter()
-        .cloned(),
+        ],
     )
     .unwrap();
 
@@ -143,7 +162,7 @@ fn main() {
             color: {
                 load: Clear,
                 store: Store,
-                format: swapchain.format(),
+                format: swapchain.image_format(),
                 samples: 1,
             }
         },
@@ -206,12 +225,14 @@ fn main() {
 
             if recreate_swapchain {
                 let dimensions: [u32; 2] = surface.window().inner_size().into();
-                let (new_swapchain, new_images) =
-                    match swapchain.recreate().dimensions(dimensions).build() {
-                        Ok(r) => r,
-                        Err(SwapchainCreationError::UnsupportedDimensions) => return,
-                        Err(e) => panic!("Failed to recreate swapchain: {:?}", e),
-                    };
+                let (new_swapchain, new_images) = match swapchain.recreate(SwapchainCreateInfo {
+                    image_extent: dimensions,
+                    ..swapchain.create_info()
+                }) {
+                    Ok(r) => r,
+                    Err(SwapchainCreationError::ImageExtentNotSupported { .. }) => return,
+                    Err(e) => panic!("Failed to recreate swapchain: {:?}", e),
+                };
                 swapchain = new_swapchain;
                 framebuffers =
                     window_size_dependent_setup(&new_images, render_pass.clone(), &mut viewport);
@@ -296,12 +317,16 @@ fn window_size_dependent_setup(
     images
         .iter()
         .map(|image| {
-            let view = ImageView::new(image.clone()).unwrap();
-            Framebuffer::start(render_pass.clone())
-                .add(view)
-                .unwrap()
-                .build()
-                .unwrap()
+            let view =
+                ImageView::new(image.clone(), ImageViewCreateInfo::from_image(image)).unwrap();
+            Framebuffer::new(
+                render_pass.clone(),
+                FramebufferCreateInfo {
+                    attachments: vec![view],
+                    ..Default::default()
+                },
+            )
+            .unwrap()
         })
         .collect()
 }
