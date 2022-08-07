@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
+use vulkano::command_buffer::RenderPassBeginInfo;
+use vulkano::format::ClearValue;
 use vulkano::{
     buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
     command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, SubpassContents},
@@ -85,9 +87,7 @@ fn main() {
             let (device, queues) = Device::new(
                 physical_device,
                 DeviceCreateInfo {
-                    enabled_extensions: physical_device
-                        .required_extensions()
-                        .union(&device_extensions),
+                    enabled_extensions: device_extensions,
                     queue_create_infos: vec![QueueCreateInfo::family(queue_family)],
                     ..Default::default()
                 },
@@ -273,7 +273,7 @@ fn main() {
                     recreate_swapchain = true;
                 }
 
-                let clear_values = [[0.0, 0.0, 0.0, 1.0].into()];
+                let clear_values = vec![Some(ClearValue::Float([0.0, 0.0, 0.0, 1.0]))];
 
                 let mut builder = AutoCommandBufferBuilder::primary(
                     device.clone(),
@@ -284,9 +284,11 @@ fn main() {
 
                 builder
                     .begin_render_pass(
-                        framebuffers[image_num].clone(),
+                        RenderPassBeginInfo {
+                            clear_values,
+                            ..RenderPassBeginInfo::framebuffer(framebuffers[image_num].clone())
+                        },
                         SubpassContents::Inline,
-                        clear_values,
                     )
                     .unwrap()
                     .set_viewport(0, [viewport.clone()])
