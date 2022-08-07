@@ -1,18 +1,19 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use vulkano::command_buffer::RenderPassBeginInfo;
-use vulkano::format::ClearValue;
 use vulkano::{
     buffer::{BufferUsage, CpuAccessibleBuffer, TypedBufferAccess},
-    command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, SubpassContents},
+    command_buffer::{
+        AutoCommandBufferBuilder, CommandBufferUsage, RenderPassBeginInfo, SubpassContents,
+    },
     device::{
         physical::{PhysicalDevice, PhysicalDeviceType},
         Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo,
     },
+    format::ClearValue,
     image::{view::ImageView, ImageAccess, ImageUsage, SwapchainImage},
     impl_vertex,
-    instance::{Instance, InstanceCreateInfo, InstanceExtensions},
+    instance::{Instance, InstanceCreateInfo},
     pipeline::{
         graphics::{
             input_assembly::InputAssemblyState,
@@ -39,11 +40,8 @@ use winit::{
 
 fn main() {
     let instance = Instance::new(InstanceCreateInfo {
-        engine_version: Version::V1_2,
-        enabled_extensions: InstanceExtensions {
-            khr_get_surface_capabilities2: false,
-            ..vulkano_win::required_extensions()
-        },
+        engine_version: Version::V1_3,
+        enabled_extensions: vulkano_win::required_extensions(),
         // enabled_layers: vec!["VK_LAYER_KHRONOS_validation".to_string()],
         ..InstanceCreateInfo::application_from_cargo_toml()
     })
